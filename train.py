@@ -14,30 +14,31 @@ class UNet(nn.Module):
     def __init__(self, in_channels=2, out_channels=1):
         super(UNet, self).__init__()
 
-        # Encoder
-        self.enc1 = self.conv_block(in_channels, 64)
-        self.enc2 = self.conv_block(64, 128)
-        self.enc3 = self.conv_block(128, 256)
-        self.enc4 = self.conv_block(256, 512)
+        # Reduced-size U-Net: fewer channels to lower memory & compute
+        # Encoder channel widths
+        self.enc1 = self.conv_block(in_channels, 16)
+        self.enc2 = self.conv_block(16, 32)
+        self.enc3 = self.conv_block(32, 64)
+        self.enc4 = self.conv_block(64, 128)
 
         # Bottleneck
-        self.bottleneck = self.conv_block(512, 1024)
+        self.bottleneck = self.conv_block(128, 256)
 
-        # Decoder
-        self.up4 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
-        self.dec4 = self.conv_block(1024, 512)
+        # Decoder (mirrors encoder)
+        self.up4 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.dec4 = self.conv_block(128 + 128, 128)
 
-        self.up3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.dec3 = self.conv_block(512, 256)
+        self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec3 = self.conv_block(64 + 64, 64)
 
-        self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.dec2 = self.conv_block(256, 128)
+        self.up2 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.dec2 = self.conv_block(32 + 32, 32)
 
-        self.up1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.dec1 = self.conv_block(128, 64)
+        self.up1 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2)
+        self.dec1 = self.conv_block(16 + 16, 16)
 
         # Output layer
-        self.out = nn.Conv2d(64, out_channels, kernel_size=1)
+        self.out = nn.Conv2d(16, out_channels, kernel_size=1)
 
     def conv_block(self, in_channels, out_channels):
         return nn.Sequential(
@@ -125,10 +126,24 @@ class MRIDataset(Dataset):
 
 
 # Training function
-def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50):
-    model.train()
+def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50, val_loader=None):
+    """
+    Train the model and optionally evaluate on a validation set each epoch.
 
+    Args:
+        model: torch.nn.Module
+        train_loader: DataLoader for training
+        criterion: loss function
+        optimizer: optimizer
+        device: torch.device
+        num_epochs: number of epochs
+        val_loader: optional DataLoader for validation
+
+    Returns:
+        model (trained)
+    """
     for epoch in range(num_epochs):
+        model.train()
         running_loss = 0.0
 
         for inputs, targets in train_loader:
@@ -148,8 +163,23 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
 
             running_loss += loss.item()
 
-        avg_loss = running_loss / len(train_loader)
-        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}')
+        avg_loss = running_loss / max(1, len(train_loader))
+        print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_loss:.4f}')
+
+        # Validation step
+        if val_loader is not None:
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for v_inputs, v_targets in val_loader:
+                    v_inputs = v_inputs.to(device)
+                    v_targets = v_targets.to(device)
+                    v_outputs = model(v_inputs)
+                    v_loss = criterion(v_outputs, v_targets)
+                    val_loss += v_loss.item()
+
+            avg_val_loss = val_loss / max(1, len(val_loader))
+            print(f'Epoch [{epoch+1}/{num_epochs}], Val Loss: {avg_val_loss:.4f}')
 
     return model
 
@@ -186,9 +216,20 @@ def main():
         print(f'Training model for {model_name}')
         print(f'{"="*50}')
 
-        # Create dataset and dataloader
+        # Create dataset and split into train/validation (90/10)
         dataset = MRIDataset(t1_dir, t2_dir, gt_dir)
-        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataset_size = len(dataset)
+        if dataset_size == 0:
+            raise ValueError(f"Dataset for {model_name} is empty. Check paths: {t1_dir}, {t2_dir}, {gt_dir}")
+
+        val_size = max(1, int(round(dataset_size * 0.1)))  # at least 1 sample for val
+        train_size = dataset_size - val_size
+
+        # Use torch.utils.data.random_split for reproducible splits if needed
+        train_subset, val_subset = torch.utils.data.random_split(dataset, [train_size, val_size])
+
+        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
 
         # Initialize model
         model = UNet(in_channels=2, out_channels=1).to(device)
@@ -197,8 +238,8 @@ def main():
         criterion = nn.BCELoss()  # Binary Cross Entropy for [0, 1] output
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-        # Train the model
-        model = train_model(model, train_loader, criterion, optimizer, device, num_epochs)
+        # Train the model with validation
+        model = train_model(model, train_loader, criterion, optimizer, device, num_epochs, val_loader=val_loader)
 
         # Save the trained model
         model_path = f'models/unet_{model_name.lower()}.pth'
@@ -212,4 +253,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
