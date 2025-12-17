@@ -59,7 +59,7 @@ def draw_predict_mask(base_img, gt_mask, pred_mask):
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     return rgb
 
-def predict_mask(t1_img, t2_img):
+def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
     """
     TODO【影像分割預測實作】
 
@@ -505,7 +505,7 @@ class MainWindow(QMainWindow):
                     t1_img = cv2.resize(t1_img, size)
                     t2_img = cv2.resize(t2_img, size)
 
-                    pred_bin = predict_mask(t1_img, t2_img) # TODO
+                    pred_bin = predict_mask(t1_img, t2_img, kind) # TODO
 
                     d = dice_coef(gt_mask, pred_bin)
                     self.pred_masks[kind].append(pred_bin)
