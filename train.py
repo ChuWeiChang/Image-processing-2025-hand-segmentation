@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 import torch.nn.functional as F
 
 
@@ -142,9 +141,18 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
     Returns:
         model (trained)
     """
+    # Cross-entropy metric function
+    def compute_cross_entropy(outputs, targets, epsilon=1e-7):
+        """Compute binary cross-entropy metric"""
+        # Clamp outputs to avoid log(0)
+        outputs = torch.clamp(outputs, epsilon, 1 - epsilon)
+        ce = -torch.mean(targets * torch.log(outputs) + (1 - targets) * torch.log(1 - outputs))
+        return ce.item()
+
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
+        running_ce = 0.0
 
         for inputs, targets in train_loader:
             inputs = inputs.to(device)
@@ -162,14 +170,18 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
             optimizer.step()
 
             running_loss += loss.item()
+            # Compute cross-entropy metric
+            running_ce += compute_cross_entropy(outputs, targets)
 
         avg_loss = running_loss / max(1, len(train_loader))
-        print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_loss:.4f}')
+        avg_ce = running_ce / max(1, len(train_loader))
+        print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_loss:.4f}, Train CE: {avg_ce:.4f}')
 
         # Validation step
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
+            val_ce = 0.0
             with torch.no_grad():
                 for v_inputs, v_targets in val_loader:
                     v_inputs = v_inputs.to(device)
@@ -177,9 +189,12 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
                     v_outputs = model(v_inputs)
                     v_loss = criterion(v_outputs, v_targets)
                     val_loss += v_loss.item()
+                    # Compute cross-entropy metric
+                    val_ce += compute_cross_entropy(v_outputs, v_targets)
 
             avg_val_loss = val_loss / max(1, len(val_loader))
-            print(f'Epoch [{epoch+1}/{num_epochs}], Val Loss: {avg_val_loss:.4f}')
+            avg_val_ce = val_ce / max(1, len(val_loader))
+            print(f'Epoch [{epoch+1}/{num_epochs}], Val Loss: {avg_val_loss:.4f}, Val CE: {avg_val_ce:.4f}')
 
     return model
 
@@ -192,7 +207,7 @@ def main():
     # Hyperparameters
     batch_size = 2
     learning_rate = 0.001
-    num_epochs = 10
+    num_epochs = 50
 
     # Create models directory if it doesn't exist
     os.makedirs('models', exist_ok=True)
@@ -201,7 +216,7 @@ def main():
     models_config = [
         {'name': 'CT', 'gt_dir': 'MRIsample/CT'},
         {'name': 'FT', 'gt_dir': 'MRIsample/FT'},
-        {'name': 'GT', 'gt_dir': 'MRIsample/GT'}
+        {'name': 'MN', 'gt_dir': 'MRIsample/MN'}
     ]
 
     t1_dir = 'MRIsample/T1'
