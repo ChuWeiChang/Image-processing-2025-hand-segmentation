@@ -15,6 +15,19 @@ import numpy as np
 
 SIZE = 350
 
+# Default folders (relative to this script). If these exist they will be
+# used as the initial directory for the "Load ... folder" dialogs and will
+# be auto-loaded at startup.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DIRS = {
+    "T1": os.path.join(BASE_DIR, "MRIsample", "T1"),
+    "T2": os.path.join(BASE_DIR, "MRIsample", "T2"),
+    # masks: CT/FT/MN folders inside MRIsample
+    "CT": os.path.join(BASE_DIR, "MRIsample", "CT"),
+    "FT": os.path.join(BASE_DIR, "MRIsample", "FT"),
+    "MN": os.path.join(BASE_DIR, "MRIsample", "MN"),
+}
+
 def make_image_box(size=SIZE):
     lbl = QLabel()
     lbl.setFixedSize(size, size)
@@ -293,6 +306,9 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(left_box, 1)
         main_layout.addWidget(right_box, 3)
 
+        # try to auto-load default folders if they exist
+        self.load_default_folders()
+
     # tab 裡面 CT / FT / MN 的三個框
     def build_tab(self, tab_name: str, container: QWidget):
         layout = QVBoxLayout(container)
@@ -339,8 +355,11 @@ class MainWindow(QMainWindow):
 
         return files
 
-    def load_t1_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select T1 Folder")
+    def load_t1_folder(self, folder: str = None):
+        # If folder provided use it; otherwise open dialog with default start dir
+        start = DEFAULT_DIRS.get("T1", "")
+        if folder is None:
+            folder = QFileDialog.getExistingDirectory(self, "Select T1 Folder", start)
         if folder:
             self.t1_images = self.load_folder_images(folder)
             self.idx = 0
@@ -348,8 +367,10 @@ class MainWindow(QMainWindow):
             self.update_spin_range()
             self.update_base_images()
 
-    def load_t2_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select T2 Folder")
+    def load_t2_folder(self, folder: str = None):
+        start = DEFAULT_DIRS.get("T2", "")
+        if folder is None:
+            folder = QFileDialog.getExistingDirectory(self, "Select T2 Folder", start)
         if folder:
             self.t2_images = self.load_folder_images(folder)
             self.idx = 0
@@ -358,8 +379,11 @@ class MainWindow(QMainWindow):
             self.update_base_images()
 
     # ---------------- 載入 mask 資料夾 ----------------
-    def load_mask_folder(self, kind: str):
-        folder = QFileDialog.getExistingDirectory(self, f"Select {kind} Mask Folder")
+    def load_mask_folder(self, kind: str, folder: str = None):
+        # allow default start dir per kind
+        start = DEFAULT_DIRS.get(kind, "")
+        if folder is None:
+            folder = QFileDialog.getExistingDirectory(self, f"Select {kind} Mask Folder", start)
         if not folder:
             return
 
@@ -404,7 +428,7 @@ class MainWindow(QMainWindow):
     def go_index(self, value):
         self.idx = value
         self.update_base_images()
-        
+
     def update_filename_label(self):
         """
         根據目前 tab + idx 顯示對應影像的檔名
@@ -443,7 +467,7 @@ class MainWindow(QMainWindow):
 
         # 右邊 CT/FT/MN 同步更新
         self.update_results()
-        
+
         # 更新檔案名稱
         self.update_filename_label()
 
@@ -451,7 +475,20 @@ class MainWindow(QMainWindow):
         # 每次切換 T1 / T2，都重新依照目前 tab 更新右側顯示
         self.update_results()
         self.update_filename_label()
-    
+
+    # try to load default folders automatically if they exist
+    def load_default_folders(self):
+        # load T1/T2 if default dirs exist
+        if os.path.isdir(DEFAULT_DIRS.get("T1", "")):
+            self.load_t1_folder(DEFAULT_DIRS["T1"])
+        if os.path.isdir(DEFAULT_DIRS.get("T2", "")):
+            self.load_t2_folder(DEFAULT_DIRS["T2"])
+        # also attempt to load masks for CT/FT/MN if present
+        for k in ("CT", "FT", "MN"):
+            p = DEFAULT_DIRS.get(k, "")
+            if os.path.isdir(p):
+                self.load_mask_folder(k, p)
+
     # ---------------- 核心：更新 CT / FT / MN 顯示 ----------------
     def update_results(self):
         """

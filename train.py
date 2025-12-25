@@ -13,31 +13,31 @@ class UNet(nn.Module):
     def __init__(self, in_channels=2, out_channels=1):
         super(UNet, self).__init__()
 
-        # Reduced-size U-Net: fewer channels to lower memory & compute
-        # Encoder channel widths
-        self.enc1 = self.conv_block(in_channels, 16)
-        self.enc2 = self.conv_block(16, 32)
-        self.enc3 = self.conv_block(32, 64)
-        self.enc4 = self.conv_block(64, 128)
+        # Smaller U-Net: reduce channel widths to lower memory & compute
+        # Encoder channel widths (reduced)
+        self.enc1 = self.conv_block(in_channels, 8)
+        self.enc2 = self.conv_block(8, 16)
+        self.enc3 = self.conv_block(16, 32)
+        self.enc4 = self.conv_block(32, 64)
 
-        # Bottleneck
-        self.bottleneck = self.conv_block(128, 256)
+        # Bottleneck (reduced)
+        self.bottleneck = self.conv_block(64, 128)
 
         # Decoder (mirrors encoder)
-        self.up4 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.dec4 = self.conv_block(128 + 128, 128)
+        self.up4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec4 = self.conv_block(64 + 64, 64)
 
-        self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.dec3 = self.conv_block(64 + 64, 64)
+        self.up3 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.dec3 = self.conv_block(32 + 32, 32)
 
-        self.up2 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
-        self.dec2 = self.conv_block(32 + 32, 32)
+        self.up2 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2)
+        self.dec2 = self.conv_block(16 + 16, 16)
 
-        self.up1 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2)
-        self.dec1 = self.conv_block(16 + 16, 16)
+        self.up1 = nn.ConvTranspose2d(16, 8, kernel_size=2, stride=2)
+        self.dec1 = self.conv_block(8 + 8, 8)
 
         # Output layer
-        self.out = nn.Conv2d(16, out_channels, kernel_size=1)
+        self.out = nn.Conv2d(8, out_channels, kernel_size=1)
 
     def conv_block(self, in_channels, out_channels):
         return nn.Sequential(
@@ -107,6 +107,13 @@ class MRIDataset(Dataset):
         t1_img = cv2.imread(t1_path, cv2.IMREAD_GRAYSCALE)
         t2_img = cv2.imread(t2_path, cv2.IMREAD_GRAYSCALE)
         gt_img = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
+
+        # Resize to 512x512 for training
+        target_size = (512, 512)
+        t1_img = cv2.resize(t1_img, target_size, interpolation=cv2.INTER_LINEAR)
+        t2_img = cv2.resize(t2_img, target_size, interpolation=cv2.INTER_LINEAR)
+        # Use nearest for masks to preserve labels
+        gt_img = cv2.resize(gt_img, target_size, interpolation=cv2.INTER_NEAREST)
 
         # Normalize to [0, 1]
         t1_img = t1_img.astype(np.float32) / 255.0
@@ -205,8 +212,8 @@ def main():
     print(f'Using device: {device}')
 
     # Hyperparameters
-    batch_size = 2
-    learning_rate = 0.001
+    batch_size = 4
+    learning_rate = 0.1
     num_epochs = 50
 
     # Create models directory if it doesn't exist
