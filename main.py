@@ -59,7 +59,7 @@ def draw_predict_mask(base_img, gt_mask, pred_mask):
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     return rgb
 
-def predict_mask(t1_img, t2_img):
+def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
     """
     TODO【影像分割預測實作】
 
@@ -96,8 +96,54 @@ def predict_mask(t1_img, t2_img):
         - 是否確實使用影像資訊進行預測
         - 程式可讀性與穩定性
     """
-    # TODO: 請在此實作你的 segmentation 預測方法
-    raise NotImplementedError("請完成 predict_mask(t1_img, t2_img)")
+    import torch
+
+    # Define UNet architecture (same as in train.py)
+    from train import UNet
+    model_in_size = (512, 512)
+    t1_img = cv2.resize(t1_img, model_in_size)
+    t2_img = cv2.resize(t2_img, model_in_size)
+    # Select model path based on mode
+    model_paths = {
+        "CT": "models/unet_ct.pth",
+        "FT": "models/unet_ft.pth",
+        "MN": "models/unet_mn.pth"
+    }
+
+    model_path = model_paths.get(mode)
+    if model_path is None or not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    # Load model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = UNet(in_channels=2, out_channels=1)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
+    model.eval()
+
+    # Preprocess input images
+    # Normalize to [0, 1]
+    t1_normalized = t1_img.astype(np.float32) / 255.0
+    t2_normalized = t2_img.astype(np.float32) / 255.0
+
+    # Get original dimensions
+    # Stack as 2-channel input: (2, H, W)
+    input_array = np.stack([t1_normalized, t2_normalized], axis=0)
+
+    # Convert to tensor and add batch dimension: (1, 2, H, W)
+    input_tensor = torch.from_numpy(input_array).unsqueeze(0).to(device)
+    # Predict
+    with torch.no_grad():
+        output = model(input_tensor)
+
+    # Convert output to numpy: (H, W)
+    pred_mask = output.squeeze().cpu().numpy()
+
+    # Apply threshold: > 0.5 -> 1, <= 0.5 -> 0
+    pred_mask = cv2.resize(pred_mask, (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
+    pred_bin = (pred_mask > 0.5).astype(np.uint8)
+
+    return pred_bin
 
 
 def dice_coef(gt, pred):
@@ -440,7 +486,7 @@ class MainWindow(QMainWindow):
                     mask_to_use = self.pred_masks[kind][self.idx]
                     if self.idx < len(self.dice_scores[kind]):
                         dice_text = f"Dice coefficient: {self.dice_scores[kind][self.idx]:.3f}"
-            
+
             elif self.gt_masks[kind]:
                 if self.idx < len(self.gt_masks[kind]):
                     mask_to_use = self.gt_masks[kind][self.idx]
@@ -505,7 +551,7 @@ class MainWindow(QMainWindow):
                     t1_img = cv2.resize(t1_img, size)
                     t2_img = cv2.resize(t2_img, size)
 
-                    pred_bin = predict_mask(t1_img, t2_img) # TODO
+                    pred_bin = predict_mask(t1_img, t2_img, kind) # TODO
 
                     d = dice_coef(gt_mask, pred_bin)
                     self.pred_masks[kind].append(pred_bin)
