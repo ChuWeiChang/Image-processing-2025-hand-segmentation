@@ -115,6 +115,9 @@ def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
     model_in_size = (512, 512)
     t1_img = cv2.resize(t1_img, model_in_size)
     t2_img = cv2.resize(t2_img, model_in_size)
+
+    t1_img = cv2.GaussianBlur(t1_img, (5, 5), 0)
+    t2_img = cv2.GaussianBlur(t2_img, (5, 5), 0)
     # Select model path based on mode
     model_paths = {
         "CT": "models/unet_ct.pth",
@@ -153,7 +156,7 @@ def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
 
     # Apply threshold: > 0.5 -> 1, <= 0.5 -> 0
     pred_mask = cv2.resize(pred_mask, (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
-    pred_bin = (pred_mask > 0.2).astype(np.uint8)
+    pred_bin = (pred_mask > 0.3).astype(np.uint8)
 
     return pred_bin
 

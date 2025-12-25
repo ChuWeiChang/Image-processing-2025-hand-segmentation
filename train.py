@@ -143,7 +143,7 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
     """
 
     # Helper for Dice calculation
-    def compute_dice(outputs, targets, epsilon=1e-7, threshold=None):
+    def compute_dice(outputs, targets, threshold=0.2):
         if threshold is not None:
             th = torch.full_like(outputs, fill_value=threshold)
             cond = outputs > th
@@ -157,7 +157,7 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
         intersection = (preds_flat * targets_flat).sum(dim=1)
         sums = preds_flat.sum(dim=1) + targets_flat.sum(dim=1)
 
-        dice = (2.0 * intersection + epsilon) / (sums + epsilon)
+        dice = (2.0 * intersection) / sums
         return dice.mean().item()
 
     for epoch in range(num_epochs):
@@ -226,8 +226,8 @@ def main():
     batch_size = 4
 
     # NOTE: 0.1 is very high for Adam. If training is unstable, try 0.001 (1e-3)
-    learning_rate = 0.1
-    num_epochs = 100
+    learning_rate = 0.005
+    num_epochs = 150
 
     os.makedirs('models', exist_ok=True)
 
@@ -241,6 +241,8 @@ def main():
     t2_dir = 'MRIsample/T2'
 
     for config in models_config:
+        seed = 319
+        torch.manual_seed(seed)
         model_name = config['name']
         gt_dir = config['gt_dir']
 
@@ -269,7 +271,7 @@ def main():
         # Epoch 1-10: 0.1
         # Epoch 11-20: 0.05
         # Epoch 21-30: 0.025 ... etc
-        scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
+        scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
 
         # Pass scheduler to train_model
         model = train_model(
