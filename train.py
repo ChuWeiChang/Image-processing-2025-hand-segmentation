@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
+# IMPORT THE SCHEDULER MODULE
+from torch.optim.lr_scheduler import StepLR
 
 
 # Simple U-Net Model
@@ -131,64 +133,68 @@ class MRIDataset(Dataset):
         return input_tensor, gt_tensor
 
 
-# Training function
-def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50, val_loader=None):
-    """
-    Train the model and optionally evaluate on a validation set each epoch.
 
-    Args:
-        model: torch.nn.Module
-        train_loader: DataLoader for training
-        criterion: loss function
-        optimizer: optimizer
-        device: torch.device
-        num_epochs: number of epochs
-        val_loader: optional DataLoader for validation
-
-    Returns:
-        model (trained)
+# ---------------------------------------------------------
+# Updated Training Function
+# ---------------------------------------------------------
+def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50, val_loader=None, scheduler=None):
     """
-    # Cross-entropy metric function
-    def compute_cross_entropy(outputs, targets, epsilon=1e-7):
-        """Compute binary cross-entropy metric"""
-        # Clamp outputs to avoid log(0)
-        outputs = torch.clamp(outputs, epsilon, 1 - epsilon)
-        ce = -torch.mean(targets * torch.log(outputs) + (1 - targets) * torch.log(1 - outputs))
-        return ce.item()
+    Train the model with an optional Learning Rate Scheduler.
+    """
+
+    # Helper for Dice calculation
+    def compute_dice(outputs, targets, epsilon=1e-7, threshold=None):
+        if threshold is not None:
+            th = torch.full_like(outputs, fill_value=threshold)
+            cond = outputs > th
+            preds = torch.where(cond, torch.ones_like(outputs), torch.zeros_like(outputs))
+        else:
+            preds = outputs
+
+        preds_flat = preds.view(preds.size(0), -1)
+        targets_flat = targets.view(targets.size(0), -1)
+
+        intersection = (preds_flat * targets_flat).sum(dim=1)
+        sums = preds_flat.sum(dim=1) + targets_flat.sum(dim=1)
+
+        dice = (2.0 * intersection + epsilon) / (sums + epsilon)
+        return dice.mean().item()
 
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
-        running_ce = 0.0
+        running_dice = 0.0
 
         for inputs, targets in train_loader:
             inputs = inputs.to(device)
             targets = targets.to(device)
 
-            # Zero the parameter gradients
             optimizer.zero_grad()
 
-            # Forward pass
             outputs = model(inputs)
             loss = criterion(outputs, targets)
 
-            # Backward pass and optimize
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item()
-            # Compute cross-entropy metric
-            running_ce += compute_cross_entropy(outputs, targets)
+            running_dice += compute_dice(outputs, targets)
 
         avg_loss = running_loss / max(1, len(train_loader))
-        avg_ce = running_ce / max(1, len(train_loader))
-        print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {avg_loss:.4f}, Train CE: {avg_ce:.4f}')
+        avg_dice = running_dice / max(1, len(train_loader))
+
+        # --- SCHEDULER STEP ---
+        # We step the scheduler after every epoch
+        current_lr = optimizer.param_groups[0]['lr']  # Get current LR for printing
+        if scheduler:
+            scheduler.step()
 
         # Validation step
+        val_str = ""
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
-            val_ce = 0.0
+            val_dice = 0.0
             with torch.no_grad():
                 for v_inputs, v_targets in val_loader:
                     v_inputs = v_inputs.to(device)
@@ -196,30 +202,35 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
                     v_outputs = model(v_inputs)
                     v_loss = criterion(v_outputs, v_targets)
                     val_loss += v_loss.item()
-                    # Compute cross-entropy metric
-                    val_ce += compute_cross_entropy(v_outputs, v_targets)
+                    val_dice += compute_dice(v_outputs, v_targets)
 
             avg_val_loss = val_loss / max(1, len(val_loader))
-            avg_val_ce = val_ce / max(1, len(val_loader))
-            print(f'Epoch [{epoch+1}/{num_epochs}], Val Loss: {avg_val_loss:.4f}, Val CE: {avg_val_ce:.4f}')
+            avg_val_dice = val_dice / max(1, len(val_loader))
+            val_str = f', Val Loss: {avg_val_loss:.4f}, Val Dice: {avg_val_dice:.4f}'
+
+        # Print with LR info
+        print(
+            f'Epoch [{epoch + 1}/{num_epochs}], LR: {current_lr:.6f}, Train Loss: {avg_loss:.4f}, Train Dice: {avg_dice:.4f}{val_str}')
 
     return model
 
 
+# ---------------------------------------------------------
+# Updated Main Function
+# ---------------------------------------------------------
 def main():
-    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
 
     # Hyperparameters
     batch_size = 4
-    learning_rate = 0.1
-    num_epochs = 50
 
-    # Create models directory if it doesn't exist
+    # NOTE: 0.1 is very high for Adam. If training is unstable, try 0.001 (1e-3)
+    learning_rate = 0.1
+    num_epochs = 100
+
     os.makedirs('models', exist_ok=True)
 
-    # Define the three models and their ground truth directories
     models_config = [
         {'name': 'CT', 'gt_dir': 'MRIsample/CT'},
         {'name': 'FT', 'gt_dir': 'MRIsample/FT'},
@@ -229,48 +240,52 @@ def main():
     t1_dir = 'MRIsample/T1'
     t2_dir = 'MRIsample/T2'
 
-    # Train each model
     for config in models_config:
         model_name = config['name']
         gt_dir = config['gt_dir']
 
-        print(f'\n{"="*50}')
+        print(f'\n{"=" * 50}')
         print(f'Training model for {model_name}')
-        print(f'{"="*50}')
+        print(f'{"=" * 50}')
 
-        # Create dataset and split into train/validation (90/10)
         dataset = MRIDataset(t1_dir, t2_dir, gt_dir)
         dataset_size = len(dataset)
         if dataset_size == 0:
-            raise ValueError(f"Dataset for {model_name} is empty. Check paths: {t1_dir}, {t2_dir}, {gt_dir}")
+            raise ValueError(f"Dataset empty for {model_name}")
 
-        val_size = max(1, int(round(dataset_size * 0.1)))  # at least 1 sample for val
+        val_size = max(1, int(round(dataset_size * 0.1)))
         train_size = dataset_size - val_size
-
-        # Use torch.utils.data.random_split for reproducible splits if needed
         train_subset, val_subset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
         train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
 
-        # Initialize model
         model = UNet(in_channels=2, out_channels=1).to(device)
-
-        # Loss function and optimizer
-        criterion = nn.BCELoss()  # Binary Cross Entropy for [0, 1] output
+        criterion = nn.BCELoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-        # Train the model with validation
-        model = train_model(model, train_loader, criterion, optimizer, device, num_epochs, val_loader=val_loader)
+        # --- DEFINE SCHEDULER ---
+        # Decay LR by a factor of 0.5 every 10 epochs
+        # Epoch 1-10: 0.1
+        # Epoch 11-20: 0.05
+        # Epoch 21-30: 0.025 ... etc
+        scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
 
-        # Save the trained model
+        # Pass scheduler to train_model
+        model = train_model(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            num_epochs,
+            val_loader=val_loader,
+            scheduler=scheduler  # <--- Pass it here
+        )
+
         model_path = f'models/unet_{model_name.lower()}.pth'
         torch.save(model.state_dict(), model_path)
         print(f'\nModel saved to {model_path}')
-
-    print(f'\n{"="*50}')
-    print('All models trained and saved successfully!')
-    print(f'{"="*50}')
 
 
 if __name__ == '__main__':
