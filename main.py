@@ -61,7 +61,6 @@ def draw_predict_mask(base_img, gt_mask, pred_mask):
 
 def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
     """
-    TODO【影像分割預測實作】
 
     本函式需根據輸入的 T1 與 T2 原始影像，
     設計一個影像處理或演算法流程，
