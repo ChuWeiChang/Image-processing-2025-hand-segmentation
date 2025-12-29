@@ -8,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 # IMPORT THE SCHEDULER MODULE
 from torch.optim.lr_scheduler import StepLR
+from torch.utils.tensorboard import SummaryWriter
 
 
 # Simple U-Net Model
@@ -137,7 +138,7 @@ class MRIDataset(Dataset):
 # ---------------------------------------------------------
 # Updated Training Function
 # ---------------------------------------------------------
-def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50, val_loader=None, scheduler=None):
+def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50, val_loader=None, scheduler=None, writer=None):
     """
     Train the model with an optional Learning Rate Scheduler.
     """
@@ -170,10 +171,8 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
             targets = targets.to(device)
 
             optimizer.zero_grad()
-
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-
             loss.backward()
             optimizer.step()
 
@@ -183,13 +182,16 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
         avg_loss = running_loss / max(1, len(train_loader))
         avg_dice = running_dice / max(1, len(train_loader))
 
-        # --- SCHEDULER STEP ---
-        # We step the scheduler after every epoch
-        current_lr = optimizer.param_groups[0]['lr']  # Get current LR for printing
+        # Initialize val metrics
+        avg_val_loss = 0.0
+        avg_val_dice = 0.0
+
+        # Scheduler Step
+        current_lr = optimizer.param_groups[0]['lr']
         if scheduler:
             scheduler.step()
 
-        # Validation step
+        # Validation Step
         val_str = ""
         if val_loader is not None:
             model.eval()
@@ -208,41 +210,56 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
             avg_val_dice = val_dice / max(1, len(val_loader))
             val_str = f', Val Loss: {avg_val_loss:.4f}, Val Dice: {avg_val_dice:.4f}'
 
-        # Print with LR info
         print(
             f'Epoch [{epoch + 1}/{num_epochs}], LR: {current_lr:.6f}, Train Loss: {avg_loss:.4f}, Train Dice: {avg_dice:.4f}{val_str}')
+
+        # --- FIX: Log metrics to the SAME chart ---
+        # Naming them "Loss/Train" and "Loss/Validation" puts them on one graph
+        if writer is not None:
+            writer.add_scalars('Loss', {
+                'Train': avg_loss,
+                'Validation': avg_val_loss
+            }, epoch + 1)
+
+            writer.add_scalars('Dice', {
+                'Train': avg_dice,
+                'Validation': avg_val_dice
+            }, epoch + 1)
+
+            writer.add_scalar('Learning_Rate', current_lr, epoch + 1)
 
     return model
 
 
 # ---------------------------------------------------------
-# Updated Main Function
+# Main Function
 # ---------------------------------------------------------
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
 
-    # Hyperparameters
+    # --- SETUP ---
     batch_size = 4
-
-    # NOTE: 0.1 is very high for Adam. If training is unstable, try 0.001 (1e-3)
     learning_rate = 0.005
     num_epochs = 150
-
     os.makedirs('models', exist_ok=True)
+    os.makedirs('runs', exist_ok=True)
 
     models_config = [
         {'name': 'CT', 'gt_dir': 'MRIsample/CT'},
         {'name': 'FT', 'gt_dir': 'MRIsample/FT'},
         {'name': 'MN', 'gt_dir': 'MRIsample/MN'}
     ]
-
     t1_dir = 'MRIsample/T1'
     t2_dir = 'MRIsample/T2'
 
     for config in models_config:
+        # Reset seed for reproducibility
         seed = 319
         torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
         model_name = config['name']
         gt_dir = config['gt_dir']
 
@@ -251,12 +268,11 @@ def main():
         print(f'{"=" * 50}')
 
         dataset = MRIDataset(t1_dir, t2_dir, gt_dir)
-        dataset_size = len(dataset)
-        if dataset_size == 0:
+        if len(dataset) == 0:
             raise ValueError(f"Dataset empty for {model_name}")
 
-        val_size = max(1, int(round(dataset_size * 0.1)))
-        train_size = dataset_size - val_size
+        val_size = max(1, int(round(len(dataset) * 0.1)))
+        train_size = len(dataset) - val_size
         train_subset, val_subset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
         train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
@@ -265,15 +281,11 @@ def main():
         model = UNet(in_channels=2, out_channels=1).to(device)
         criterion = nn.BCELoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-        # --- DEFINE SCHEDULER ---
-        # Decay LR by a factor of 0.5 every 10 epochs
-        # Epoch 1-10: 0.1
-        # Epoch 11-20: 0.05
-        # Epoch 21-30: 0.025 ... etc
         scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
 
-        # Pass scheduler to train_model
+        # Use specific run folder for TensorBoard
+        writer = SummaryWriter(log_dir=f'runs/{model_name}')
+
         model = train_model(
             model,
             train_loader,
@@ -282,8 +294,11 @@ def main():
             device,
             num_epochs,
             val_loader=val_loader,
-            scheduler=scheduler  # <--- Pass it here
+            scheduler=scheduler,
+            writer=writer
         )
+
+        writer.close()
 
         model_path = f'models/unet_{model_name.lower()}.pth'
         torch.save(model.state_dict(), model_path)
