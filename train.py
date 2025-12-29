@@ -9,7 +9,7 @@ import torch.nn.functional as F
 # IMPORT THE SCHEDULER MODULE
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.tensorboard import SummaryWriter
-
+from datetime import datetime
 
 # Simple U-Net Model
 class UNet(nn.Module):
@@ -283,8 +283,11 @@ def main():
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
         scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
 
-        # Use specific run folder for TensorBoard
-        writer = SummaryWriter(log_dir=f'runs/{model_name}')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_dir_path = os.path.join('runs', f"{model_name}_{timestamp}")
+
+        # Initialize the writer with this unique path
+        writer = SummaryWriter(log_dir=log_dir_path)
 
         model = train_model(
             model,
