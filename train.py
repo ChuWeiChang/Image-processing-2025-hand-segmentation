@@ -86,7 +86,7 @@ class UNet(nn.Module):
 
 # Dataset class
 class MRIDataset(Dataset):
-    def __init__(self, t1_dir, t2_dir, gt_dir, transform=None):
+    def __init__(self, t1_dir, t2_dir, gt_dir, transform=None, gaussian_kernel=(5, 5)):
         self.t1_dir = t1_dir
         self.t2_dir = t2_dir
         self.gt_dir = gt_dir
@@ -94,6 +94,14 @@ class MRIDataset(Dataset):
 
         # Get all image filenames
         self.image_files = sorted([f for f in os.listdir(t1_dir) if f.endswith('.jpg')])
+
+        # Augmentation parameters
+        # rotation in degrees (+/-)
+        self.rotation_range = 20
+        # fraction of width/height to shift (e.g. 0.1 = up to 10% shift)
+        self.shift_frac = 0.1
+        # gaussian blur kernel size (must be odd). Pass None to disable blur (used for MN)
+        self.gaussian_kernel = gaussian_kernel
 
     def __len__(self):
         return len(self.image_files)
@@ -117,6 +125,33 @@ class MRIDataset(Dataset):
         t2_img = cv2.resize(t2_img, target_size, interpolation=cv2.INTER_LINEAR)
         # Use nearest for masks to preserve labels
         gt_img = cv2.resize(gt_img, target_size, interpolation=cv2.INTER_NEAREST)
+
+        # --- Data augmentation (in-place, minimal changes) ---
+        # Apply Gaussian blur to input images only (helps reduce noise)
+        if self.gaussian_kernel is not None:
+            t1_img = cv2.GaussianBlur(t1_img, self.gaussian_kernel, 0)
+            t2_img = cv2.GaussianBlur(t2_img, self.gaussian_kernel, 0)
+
+        # Random rotation and shift
+        # Compute random angle and translation in pixels
+        angle = np.random.uniform(-self.rotation_range, self.rotation_range)
+        h, w = t1_img.shape[:2]
+        max_tx = int(self.shift_frac * w)
+        max_ty = int(self.shift_frac * h)
+        tx = int(np.random.uniform(-max_tx, max_tx))
+        ty = int(np.random.uniform(-max_ty, max_ty))
+
+        # Center for rotation
+        center = (w // 2, h // 2)
+        M_rot = cv2.getRotationMatrix2D(center, angle, 1.0)
+        # Add translation to the rotation matrix
+        M_rot[0, 2] += tx
+        M_rot[1, 2] += ty
+
+        # Apply affine transform: linear interpolation for images, nearest for masks
+        t1_img = cv2.warpAffine(t1_img, M_rot, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        t2_img = cv2.warpAffine(t2_img, M_rot, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        gt_img = cv2.warpAffine(gt_img, M_rot, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=(0,))
 
         # Normalize to [0, 1]
         t1_img = t1_img.astype(np.float32) / 255.0
@@ -267,7 +302,9 @@ def main():
         print(f'Training model for {model_name}')
         print(f'{"=" * 50}')
 
-        dataset = MRIDataset(t1_dir, t2_dir, gt_dir)
+        # Disable Gaussian blur for MN model as requested
+        gaussian_kernel = None if model_name == 'MN' else (5, 5)
+        dataset = MRIDataset(t1_dir, t2_dir, gt_dir, gaussian_kernel=gaussian_kernel)
         if len(dataset) == 0:
             raise ValueError(f"Dataset empty for {model_name}")
 
