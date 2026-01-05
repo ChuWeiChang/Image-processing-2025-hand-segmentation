@@ -156,7 +156,7 @@ def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
 
     # Apply threshold: > 0.5 -> 1, <= 0.5 -> 0
     pred_mask = cv2.resize(pred_mask, (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
-    pred_bin = (pred_mask > 0.3).astype(np.uint8)
+    pred_bin = (pred_mask > 0.5).astype(np.uint8)
 
     return pred_bin
 
