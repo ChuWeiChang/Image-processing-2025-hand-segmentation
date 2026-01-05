@@ -80,7 +80,7 @@ class UNet(nn.Module):
         dec1 = self.dec1(dec1)
 
         # Output with sigmoid to get [0, 1] range
-        out = torch.sigmoid(self.out(dec1))
+        out = self.out(dec1)
         return out
 
 
@@ -187,21 +187,17 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
     """
 
     # Helper for Dice calculation
-    def compute_dice(outputs, targets, threshold=0.2):
-        if threshold is not None:
-            th = torch.full_like(outputs, fill_value=threshold)
-            cond = outputs > th
-            preds = torch.where(cond, torch.ones_like(outputs), torch.zeros_like(outputs))
-        else:
-            preds = outputs
+    def compute_dice(outputs, targets, threshold=0.0):  # Threshold is 0.0 for logits (sigmoid(0) = 0.5)
+        # Apply sigmoid just for metric calculation
+        probs = torch.sigmoid(outputs)
+
+        preds = (probs > 0.5).float()  # Standard threshold
 
         preds_flat = preds.view(preds.size(0), -1)
         targets_flat = targets.view(targets.size(0), -1)
-
         intersection = (preds_flat * targets_flat).sum(dim=1)
         sums = preds_flat.sum(dim=1) + targets_flat.sum(dim=1)
-
-        dice = (2.0 * intersection) / sums
+        dice = (2.0 * intersection) / (sums + 1e-8)  # Add epsilon to avoid divide by zero
         return dice.mean().item()
 
     for epoch in range(num_epochs):
@@ -323,7 +319,8 @@ def main():
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
         model = UNet(in_channels=2, out_channels=1).to(device)
-        criterion = nn.BCELoss()
+        pos_weight = torch.tensor([20.0]).to(device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
         scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
 
