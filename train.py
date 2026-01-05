@@ -95,11 +95,11 @@ class MRIDataset(Dataset):
 
         self.image_files = sorted([f for f in os.listdir(t1_dir) if f.endswith('.jpg')])
 
-        self.rotation_range = 60
+        self.rotation_range = 30
         self.shift_frac = 0.15
         self.gaussian_kernel = gaussian_kernel
-        self.contrast_range = (0.8, 1.2)
-        self.gamma_range = (0.8, 1.2)
+        self.contrast_range = (0.9, 1.1)
+        self.gamma_range = (0.9, 1.1)
         self.intensity_aug_prob = 0.5
 
     def __len__(self):
@@ -144,8 +144,8 @@ class MRIDataset(Dataset):
                 t2_img = cv2.GaussianBlur(t2_img, self.gaussian_kernel, 0)
 
             # 2. Intensity
-            t1_img = self.random_adjust_intensity(t1_img)
-            t2_img = self.random_adjust_intensity(t2_img)
+            # t1_img = self.random_adjust_intensity(t1_img)
+            # t2_img = self.random_adjust_intensity(t2_img)
 
             # 3. Rotation / Shift
             angle = np.random.uniform(-self.rotation_range, self.rotation_range)
@@ -285,9 +285,9 @@ def main():
     os.makedirs('runs', exist_ok=True)
 
     models_config = [
-        # {'name': 'CT', 'gt_dir': 'carpalTunnel_Sorted/CT', 'v_gt_dir': 'MRIsample/CT'},
-        # {'name': 'FT', 'gt_dir': 'carpalTunnel_Sorted/FT', 'v_gt_dir': 'MRIsample/FT'},
-        {'name': 'MN', 'gt_dir': 'carpalTunnel_Sorted/MN', 'v_gt_dir': 'MRIsample/MN'}
+        {'name': 'CT', 'gt_dir': 'carpalTunnel_Sorted/CT', 'v_gt_dir': 'MRIsample/CT', 'pos_weight': 2.0},
+        {'name': 'FT', 'gt_dir': 'carpalTunnel_Sorted/FT', 'v_gt_dir': 'MRIsample/FT', 'pos_weight': 5.0},
+        {'name': 'MN', 'gt_dir': 'carpalTunnel_Sorted/MN', 'v_gt_dir': 'MRIsample/MN', 'pos_weight': 20.0}
     ]
     t1_dir = 'carpalTunnel_Sorted/T1'
     t2_dir = 'carpalTunnel_Sorted/T2'
@@ -319,7 +319,7 @@ def main():
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
         model = UNet(in_channels=2, out_channels=1).to(device)
-        pos_weight = torch.tensor([20.0]).to(device)
+        pos_weight = torch.tensor(config['pos_weight']).to(device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
         scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
