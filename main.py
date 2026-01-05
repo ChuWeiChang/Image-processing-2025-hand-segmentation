@@ -115,9 +115,9 @@ def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
     model_in_size = (512, 512)
     t1_img = cv2.resize(t1_img, model_in_size)
     t2_img = cv2.resize(t2_img, model_in_size)
-
-    t1_img = cv2.GaussianBlur(t1_img, (5, 5), 0)
-    t2_img = cv2.GaussianBlur(t2_img, (5, 5), 0)
+    if mode!= "MN":
+        t1_img = cv2.GaussianBlur(t1_img, (5, 5), 0)
+        t2_img = cv2.GaussianBlur(t2_img, (5, 5), 0)
     # Select model path based on mode
     model_paths = {
         "CT": "models/unet_ct.pth",
