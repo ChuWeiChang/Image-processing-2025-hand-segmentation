@@ -596,7 +596,7 @@ class MainWindow(QMainWindow):
                     t1_img = cv2.resize(t1_img, size)
                     t2_img = cv2.resize(t2_img, size)
 
-                    pred_bin = predict_mask(t1_img, t2_img, kind)  # TODO
+                    pred_bin = predict_mask(t1_img, t2_img, kind)
 
                     d = dice_coef(gt_mask, pred_bin)
                     self.pred_masks[kind].append(pred_bin)
