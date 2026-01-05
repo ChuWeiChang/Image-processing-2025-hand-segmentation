@@ -86,88 +86,96 @@ class UNet(nn.Module):
 
 # Dataset class
 class MRIDataset(Dataset):
-    def __init__(self, t1_dir, t2_dir, gt_dir, transform=None, gaussian_kernel=(5, 5)):
+    # Added 'augment' flag defaults to True
+    def __init__(self, t1_dir, t2_dir, gt_dir, augment=True, gaussian_kernel=(5, 5)):
         self.t1_dir = t1_dir
         self.t2_dir = t2_dir
         self.gt_dir = gt_dir
-        self.transform = transform
+        self.augment = augment  # Store the flag
 
-        # Get all image filenames
         self.image_files = sorted([f for f in os.listdir(t1_dir) if f.endswith('.jpg')])
 
-        # Augmentation parameters
-        # rotation in degrees (+/-)
-        self.rotation_range = 20
-        # fraction of width/height to shift (e.g. 0.1 = up to 10% shift)
-        self.shift_frac = 0.1
-        # gaussian blur kernel size (must be odd). Pass None to disable blur (used for MN)
+        self.rotation_range = 60
+        self.shift_frac = 0.15
         self.gaussian_kernel = gaussian_kernel
+        self.contrast_range = (0.8, 1.2)
+        self.gamma_range = (0.8, 1.2)
+        self.intensity_aug_prob = 0.5
 
     def __len__(self):
         return len(self.image_files)
 
+    def random_adjust_intensity(self, img):
+        # ... (Same as your code) ...
+        if np.random.rand() > self.intensity_aug_prob:
+            return img
+
+        alpha = np.random.uniform(self.contrast_range[0], self.contrast_range[1])
+        img = img.astype(np.float32) * alpha
+        img = np.clip(img, 0, 255)
+
+        gamma = np.random.uniform(self.gamma_range[0], self.gamma_range[1])
+        img = img / 255.0
+        img = np.power(img, gamma)
+        img = img * 255.0
+        img = np.clip(img, 0, 255).astype(np.uint8)
+        return img
+
     def __getitem__(self, idx):
         img_name = self.image_files[idx]
-
-        # Load T1 and T2 images
         t1_path = os.path.join(self.t1_dir, img_name)
         t2_path = os.path.join(self.t2_dir, img_name)
         gt_path = os.path.join(self.gt_dir, img_name)
 
-        # Read images in grayscale
         t1_img = cv2.imread(t1_path, cv2.IMREAD_GRAYSCALE)
         t2_img = cv2.imread(t2_path, cv2.IMREAD_GRAYSCALE)
         gt_img = cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
 
-        # Resize to 512x512 for training
         target_size = (512, 512)
         t1_img = cv2.resize(t1_img, target_size, interpolation=cv2.INTER_LINEAR)
         t2_img = cv2.resize(t2_img, target_size, interpolation=cv2.INTER_LINEAR)
-        # Use nearest for masks to preserve labels
         gt_img = cv2.resize(gt_img, target_size, interpolation=cv2.INTER_NEAREST)
 
-        # --- Data augmentation (in-place, minimal changes) ---
-        # Apply Gaussian blur to input images only (helps reduce noise)
-        if self.gaussian_kernel is not None:
-            t1_img = cv2.GaussianBlur(t1_img, self.gaussian_kernel, 0)
-            t2_img = cv2.GaussianBlur(t2_img, self.gaussian_kernel, 0)
+        # --- AUGMENTATION BLOCK ---
+        if self.augment:
+            # 1. Blur
+            if self.gaussian_kernel is not None:
+                t1_img = cv2.GaussianBlur(t1_img, self.gaussian_kernel, 0)
+                t2_img = cv2.GaussianBlur(t2_img, self.gaussian_kernel, 0)
 
-        # Random rotation and shift
-        # Compute random angle and translation in pixels
-        angle = np.random.uniform(-self.rotation_range, self.rotation_range)
-        h, w = t1_img.shape[:2]
-        max_tx = int(self.shift_frac * w)
-        max_ty = int(self.shift_frac * h)
-        tx = int(np.random.uniform(-max_tx, max_tx))
-        ty = int(np.random.uniform(-max_ty, max_ty))
+            # 2. Intensity
+            t1_img = self.random_adjust_intensity(t1_img)
+            t2_img = self.random_adjust_intensity(t2_img)
 
-        # Center for rotation
-        center = (w // 2, h // 2)
-        M_rot = cv2.getRotationMatrix2D(center, angle, 1.0)
-        # Add translation to the rotation matrix
-        M_rot[0, 2] += tx
-        M_rot[1, 2] += ty
+            # 3. Rotation / Shift
+            angle = np.random.uniform(-self.rotation_range, self.rotation_range)
+            h, w = t1_img.shape[:2]
+            max_tx = int(self.shift_frac * w)
+            max_ty = int(self.shift_frac * h)
+            tx = int(np.random.uniform(-max_tx, max_tx))
+            ty = int(np.random.uniform(-max_ty, max_ty))
 
-        # Apply affine transform: linear interpolation for images, nearest for masks
-        t1_img = cv2.warpAffine(t1_img, M_rot, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-        t2_img = cv2.warpAffine(t2_img, M_rot, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-        gt_img = cv2.warpAffine(gt_img, M_rot, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=(0,))
+            center = (w // 2, h // 2)
+            M_rot = cv2.getRotationMatrix2D(center, angle, 1.0)
+            M_rot[0, 2] += tx
+            M_rot[1, 2] += ty
 
-        # Normalize to [0, 1]
+            t1_img = cv2.warpAffine(t1_img, M_rot, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
+                                    borderValue=(0,))
+            t2_img = cv2.warpAffine(t2_img, M_rot, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
+                                    borderValue=(0,))
+            gt_img = cv2.warpAffine(gt_img, M_rot, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
+                                    borderValue=(0,))
+
+        # Normalize
         t1_img = t1_img.astype(np.float32) / 255.0
         t2_img = t2_img.astype(np.float32) / 255.0
         gt_img = gt_img.astype(np.float32) / 255.0
 
-        # Stack T1 and T2 as 2-channel input
-        input_img = np.stack([t1_img, t2_img], axis=0)  # Shape: (2, H, W)
-        gt_img = np.expand_dims(gt_img, axis=0)  # Shape: (1, H, W)
+        input_img = np.stack([t1_img, t2_img], axis=0)
+        gt_img = np.expand_dims(gt_img, axis=0)
 
-        # Convert to tensors
-        input_tensor = torch.from_numpy(input_img)
-        gt_tensor = torch.from_numpy(gt_img)
-
-        return input_tensor, gt_tensor
-
+        return torch.from_numpy(input_img), torch.from_numpy(gt_img)
 
 
 # ---------------------------------------------------------
@@ -274,19 +282,21 @@ def main():
     print(f'Using device: {device}')
 
     # --- SETUP ---
-    batch_size = 4
+    batch_size = 12
     learning_rate = 0.005
-    num_epochs = 150
+    num_epochs = 100
     os.makedirs('models', exist_ok=True)
     os.makedirs('runs', exist_ok=True)
 
     models_config = [
-        {'name': 'CT', 'gt_dir': 'MRIsample/CT'},
-        {'name': 'FT', 'gt_dir': 'MRIsample/FT'},
-        {'name': 'MN', 'gt_dir': 'MRIsample/MN'}
+        # {'name': 'CT', 'gt_dir': 'carpalTunnel_Sorted/CT', 'v_gt_dir': 'MRIsample/CT'},
+        # {'name': 'FT', 'gt_dir': 'carpalTunnel_Sorted/FT', 'v_gt_dir': 'MRIsample/FT'},
+        {'name': 'MN', 'gt_dir': 'carpalTunnel_Sorted/MN', 'v_gt_dir': 'MRIsample/MN'}
     ]
-    t1_dir = 'MRIsample/T1'
-    t2_dir = 'MRIsample/T2'
+    t1_dir = 'carpalTunnel_Sorted/T1'
+    t2_dir = 'carpalTunnel_Sorted/T2'
+    val_t1_dir = 'MRIsample/T1'
+    val_t2_dir = 'MRIsample/T2'
 
     for config in models_config:
         # Reset seed for reproducibility
@@ -297,23 +307,20 @@ def main():
 
         model_name = config['name']
         gt_dir = config['gt_dir']
-
+        v_t_dir = config['v_gt_dir']
         print(f'\n{"=" * 50}')
         print(f'Training model for {model_name}')
         print(f'{"=" * 50}')
 
         # Disable Gaussian blur for MN model as requested
         gaussian_kernel = None if model_name == 'MN' else (5, 5)
-        dataset = MRIDataset(t1_dir, t2_dir, gt_dir, gaussian_kernel=gaussian_kernel)
-        if len(dataset) == 0:
+        train_dataset = MRIDataset(t1_dir, t2_dir, gt_dir, gaussian_kernel=gaussian_kernel)
+        val_dataset = MRIDataset(val_t1_dir, val_t2_dir, v_t_dir, augment=False, gaussian_kernel=None)
+        if len(train_dataset) == 0:
             raise ValueError(f"Dataset empty for {model_name}")
 
-        val_size = max(1, int(round(len(dataset) * 0.1)))
-        train_size = len(dataset) - val_size
-        train_subset, val_subset = torch.utils.data.random_split(dataset, [train_size, val_size])
-
-        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
         model = UNet(in_channels=2, out_channels=1).to(device)
         criterion = nn.BCELoss()
