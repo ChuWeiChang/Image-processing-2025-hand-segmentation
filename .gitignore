@@ -1,7 +1,7 @@
 .idea
 .venv
 MRIsample
-models
+model*
 runs
-models_good
 report
+carpalTunnel*
