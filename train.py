@@ -6,92 +6,22 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
-# IMPORT THE SCHEDULER MODULE
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
+import segmentation_models_pytorch as smp
 
-# Simple U-Net Model
-class UNet(nn.Module):
-    def __init__(self, in_channels=2, out_channels=1):
-        super(UNet, self).__init__()
 
-        # Smaller U-Net: reduce channel widths to lower memory & compute
-        # Encoder channel widths (reduced)
-        self.enc1 = self.conv_block(in_channels, 8)
-        self.enc2 = self.conv_block(8, 16)
-        self.enc3 = self.conv_block(16, 32)
-        self.enc4 = self.conv_block(32, 64)
-
-        # Bottleneck (reduced)
-        self.bottleneck = self.conv_block(64, 128)
-
-        # Decoder (mirrors encoder)
-        self.up4 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.dec4 = self.conv_block(64 + 64, 64)
-
-        self.up3 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
-        self.dec3 = self.conv_block(32 + 32, 32)
-
-        self.up2 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2)
-        self.dec2 = self.conv_block(16 + 16, 16)
-
-        self.up1 = nn.ConvTranspose2d(16, 8, kernel_size=2, stride=2)
-        self.dec1 = self.conv_block(8 + 8, 8)
-
-        # Output layer
-        self.out = nn.Conv2d(8, out_channels, kernel_size=1)
-
-    def conv_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        # Encoder
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(F.max_pool2d(enc1, 2))
-        enc3 = self.enc3(F.max_pool2d(enc2, 2))
-        enc4 = self.enc4(F.max_pool2d(enc3, 2))
-
-        # Bottleneck
-        bottleneck = self.bottleneck(F.max_pool2d(enc4, 2))
-
-        # Decoder
-        dec4 = self.up4(bottleneck)
-        dec4 = torch.cat([dec4, enc4], dim=1)
-        dec4 = self.dec4(dec4)
-
-        dec3 = self.up3(dec4)
-        dec3 = torch.cat([dec3, enc3], dim=1)
-        dec3 = self.dec3(dec3)
-
-        dec2 = self.up2(dec3)
-        dec2 = torch.cat([dec2, enc2], dim=1)
-        dec2 = self.dec2(dec2)
-
-        dec1 = self.up1(dec2)
-        dec1 = torch.cat([dec1, enc1], dim=1)
-        dec1 = self.dec1(dec1)
-
-        # Output with sigmoid to get [0, 1] range
-        out = self.out(dec1)
-        return out
-
+# --- MODEL, DATASET, AND LOSS CLASSES REMAIN THE SAME ---
+# (I am keeping your existing imports and classes as they are correct)
 
 # Dataset class
 class MRIDataset(Dataset):
-    # Added 'augment' flag defaults to True
     def __init__(self, t1_dir, t2_dir, gt_dir, augment=True, gaussian_kernel=(5, 5)):
         self.t1_dir = t1_dir
         self.t2_dir = t2_dir
         self.gt_dir = gt_dir
-        self.augment = augment  # Store the flag
+        self.augment = augment
 
         self.image_files = sorted([f for f in os.listdir(t1_dir) if f.endswith('.jpg')])
 
@@ -106,7 +36,6 @@ class MRIDataset(Dataset):
         return len(self.image_files)
 
     def random_adjust_intensity(self, img):
-        # ... (Same as your code) ...
         if np.random.rand() > self.intensity_aug_prob:
             return img
 
@@ -136,18 +65,14 @@ class MRIDataset(Dataset):
         t2_img = cv2.resize(t2_img, target_size, interpolation=cv2.INTER_LINEAR)
         gt_img = cv2.resize(gt_img, target_size, interpolation=cv2.INTER_NEAREST)
 
-        # --- AUGMENTATION BLOCK ---
         if self.augment:
-            # 1. Blur
             if self.gaussian_kernel is not None:
                 t1_img = cv2.GaussianBlur(t1_img, self.gaussian_kernel, 0)
                 t2_img = cv2.GaussianBlur(t2_img, self.gaussian_kernel, 0)
 
-            # 2. Intensity
             t1_img = self.random_adjust_intensity(t1_img)
             t2_img = self.random_adjust_intensity(t2_img)
 
-            # 3. Rotation / Shift
             angle = np.random.uniform(-self.rotation_range, self.rotation_range)
             h, w = t1_img.shape[:2]
             max_tx = int(self.shift_frac * w)
@@ -167,7 +92,6 @@ class MRIDataset(Dataset):
             gt_img = cv2.warpAffine(gt_img, M_rot, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT,
                                     borderValue=(0,))
 
-        # Normalize
         t1_img = t1_img.astype(np.float32) / 255.0
         t2_img = t2_img.astype(np.float32) / 255.0
         gt_img = gt_img.astype(np.float32) / 255.0
@@ -178,26 +102,40 @@ class MRIDataset(Dataset):
         return torch.from_numpy(input_img), torch.from_numpy(gt_img)
 
 
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1.0):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, inputs, targets):
+        inputs = torch.sigmoid(inputs)
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        intersection = (inputs * targets).sum()
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        return 1 - dice
+
+
 # ---------------------------------------------------------
-# Updated Training Function
+# UPDATED Training Function
 # ---------------------------------------------------------
-def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50, val_loader=None, scheduler=None, writer=None):
+def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50, val_loader=None, scheduler=None,
+                writer=None, save_path=None):
     """
-    Train the model with an optional Learning Rate Scheduler.
+    Train the model and save the version with the highest Validation Dice Score.
     """
 
-    # Helper for Dice calculation
-    def compute_dice(outputs, targets, threshold=0.0):  # Threshold is 0.0 for logits (sigmoid(0) = 0.5)
-        # Apply sigmoid just for metric calculation
+    # Initialize best score tracker
+    best_val_dice = -1.0
+
+    def compute_dice(outputs, targets):
         probs = torch.sigmoid(outputs)
-
-        preds = (probs > 0.5).float()  # Standard threshold
-
+        preds = (probs > 0.5).float()
         preds_flat = preds.view(preds.size(0), -1)
         targets_flat = targets.view(targets.size(0), -1)
         intersection = (preds_flat * targets_flat).sum(dim=1)
         sums = preds_flat.sum(dim=1) + targets_flat.sum(dim=1)
-        dice = (2.0 * intersection) / (sums + 1e-8)  # Add epsilon to avoid divide by zero
+        dice = (2.0 * intersection) / (sums + 1e-8)
         return dice.mean().item()
 
     for epoch in range(num_epochs):
@@ -221,17 +159,17 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
         avg_loss = running_loss / max(1, len(train_loader))
         avg_dice = running_dice / max(1, len(train_loader))
 
-        # Initialize val metrics
-        avg_val_loss = 0.0
-        avg_val_dice = 0.0
-
         # Scheduler Step
         current_lr = optimizer.param_groups[0]['lr']
         if scheduler:
             scheduler.step()
 
         # Validation Step
+        avg_val_loss = 0.0
+        avg_val_dice = 0.0
         val_str = ""
+        save_msg = ""
+
         if val_loader is not None:
             model.eval()
             val_loss = 0.0
@@ -241,49 +179,32 @@ def train_model(model, train_loader, criterion, optimizer, device, num_epochs=50
                     v_inputs = v_inputs.to(device)
                     v_targets = v_targets.to(device)
                     v_outputs = model(v_inputs)
-                    v_loss = criterion(v_outputs, v_targets)
-                    val_loss += v_loss.item()
+                    val_loss += criterion(v_outputs, v_targets).item()
                     val_dice += compute_dice(v_outputs, v_targets)
 
             avg_val_loss = val_loss / max(1, len(val_loader))
             avg_val_dice = val_dice / max(1, len(val_loader))
             val_str = f', Val Loss: {avg_val_loss:.4f}, Val Dice: {avg_val_dice:.4f}'
 
+            # --- SAVE BEST MODEL LOGIC ---
+            if save_path is not None:
+                if avg_val_dice > best_val_dice:
+                    best_val_dice = avg_val_dice
+                    torch.save(model.state_dict(), save_path)
+                    save_msg = f" --> Best Model Saved! (Dice: {best_val_dice:.4f})"
+
         print(
-            f'Epoch [{epoch + 1}/{num_epochs}], LR: {current_lr:.6f}, Train Loss: {avg_loss:.4f}, Train Dice: {avg_dice:.4f}{val_str}')
+            f'Epoch [{epoch + 1}/{num_epochs}], LR: {current_lr:.6f}, Train Loss: {avg_loss:.4f}, Train Dice: {avg_dice:.4f}{val_str}{save_msg}')
 
-        # --- FIX: Log metrics to the SAME chart ---
-        # Naming them "Loss/Train" and "Loss/Validation" puts them on one graph
         if writer is not None:
-            writer.add_scalars('Loss', {
-                'Train': avg_loss,
-                'Validation': avg_val_loss
-            }, epoch + 1)
-
-            writer.add_scalars('Dice', {
-                'Train': avg_dice,
-                'Validation': avg_val_dice
-            }, epoch + 1)
-
+            writer.add_scalars('Loss', {'Train': avg_loss, 'Validation': avg_val_loss}, epoch + 1)
+            writer.add_scalars('Dice', {'Train': avg_dice, 'Validation': avg_val_dice}, epoch + 1)
             writer.add_scalar('Learning_Rate', current_lr, epoch + 1)
 
+    print(f"Training Complete. Best Validation Dice: {best_val_dice:.4f}")
     return model
 
-class DiceLoss(nn.Module):
-    def __init__(self, smooth=1.0):
-        super(DiceLoss, self).__init__()
-        self.smooth = smooth
 
-    def forward(self, inputs, targets):
-        # Flatten label and prediction tensors
-        inputs = torch.sigmoid(inputs)  # Convert logits to probabilities
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        intersection = (inputs * targets).sum()
-        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
-
-        return 1 - dice  # We want to minimize error, so 1 - Dice
 # ---------------------------------------------------------
 # Main Function
 # ---------------------------------------------------------
@@ -292,10 +213,12 @@ def main():
     print(f'Using device: {device}')
 
     # --- SETUP ---
-    batch_size = 12
+    batch_size = 5
     learning_rate = 0.002
     num_epochs = 100
-    os.makedirs('models', exist_ok=True)
+
+    # Ensure directories exist
+    os.makedirs('models', exist_ok=True)  # Changed from models_resnet for consistency with your save path
     os.makedirs('runs', exist_ok=True)
 
     models_config = [
@@ -309,7 +232,6 @@ def main():
     val_t2_dir = 'MRIsample/T2'
 
     for config in models_config:
-        # Reset seed for reproducibility
         seed = 319
         torch.manual_seed(seed)
         if torch.cuda.is_available():
@@ -322,28 +244,31 @@ def main():
         print(f'Training model for {model_name}')
         print(f'{"=" * 50}')
 
-        # Disable Gaussian blur for MN model as requested
         gaussian_kernel = None if model_name == 'MN' else (5, 5)
         train_dataset = MRIDataset(t1_dir, t2_dir, gt_dir, gaussian_kernel=gaussian_kernel)
         val_dataset = MRIDataset(val_t1_dir, val_t2_dir, v_t_dir, augment=False, gaussian_kernel=None)
-        if len(train_dataset) == 0:
-            raise ValueError(f"Dataset empty for {model_name}")
 
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-        model = UNet(in_channels=2, out_channels=1).to(device)
+        model = smp.Unet(
+            encoder_name="resnet34",
+            encoder_weights="imagenet",
+            in_channels=2,
+            classes=1,
+        ).to(device)
+
         criterion = DiceLoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
         scheduler = StepLR(optimizer, step_size=10, gamma=0.7)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_dir_path = os.path.join('runs', f"{model_name}_{timestamp}")
+        writer = SummaryWriter(log_dir=os.path.join('runs', f"{model_name}_{timestamp}"))
 
-        # Initialize the writer with this unique path
-        writer = SummaryWriter(log_dir=log_dir_path)
+        # Define where to save the best model
+        best_model_path = f'models/{model_name.lower()}_best.pth'
 
-        model = train_model(
+        train_model(
             model,
             train_loader,
             criterion,
@@ -352,14 +277,12 @@ def main():
             num_epochs,
             val_loader=val_loader,
             scheduler=scheduler,
-            writer=writer
+            writer=writer,
+            save_path=best_model_path  # Pass the path here
         )
 
         writer.close()
-
-        model_path = f'models/unet_{model_name.lower()}.pth'
-        torch.save(model.state_dict(), model_path)
-        print(f'\nModel saved to {model_path}')
+        print(f'Best model for {model_name} saved to {best_model_path}')
 
 
 if __name__ == '__main__':

@@ -6,12 +6,13 @@ from PyQt5.QtWidgets import (
     QGroupBox, QHBoxLayout, QVBoxLayout, QSpinBox, QTabWidget, QGridLayout,
     QFrame, QMessageBox
 )
-    
+
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt
 
 import cv2
 import numpy as np
+import segmentation_models_pytorch as smp
 
 SIZE = 350
 
@@ -51,6 +52,7 @@ def draw_mask(image, mask):
 
     # blend: 原圖 30% + 綠色 70%
     return cv2.addWeighted(image, 0.3, masked_image, 0.7, 0)
+
 
 def draw_predict_mask(base_img, gt_mask, pred_mask):
     """
@@ -111,18 +113,17 @@ def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
     import torch
 
     # Define UNet architecture (same as in train.py)
-    from train import UNet
     model_in_size = (512, 512)
     t1_img = cv2.resize(t1_img, model_in_size)
     t2_img = cv2.resize(t2_img, model_in_size)
-    if mode!= "MN":
+    if mode != "MN":
         t1_img = cv2.GaussianBlur(t1_img, (5, 5), 0)
         t2_img = cv2.GaussianBlur(t2_img, (5, 5), 0)
     # Select model path based on mode
     model_paths = {
-        "CT": "models/unet_ct.pth",
-        "FT": "models/unet_ft.pth",
-        "MN": "models/unet_mn.pth"
+        "CT": "models/ct_best.pth",
+        "FT": "models/ft_best.pth",
+        "MN": "models/mn_best.pth"
     }
 
     model_path = model_paths.get(mode)
@@ -131,7 +132,12 @@ def predict_mask(t1_img, t2_img, mode) -> np.ndarray:
 
     # Load model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(in_channels=2, out_channels=1)
+    model = smp.Unet(
+        encoder_name="resnet34",
+        encoder_weights="imagenet",
+        in_channels=2,
+        classes=1,
+    ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
@@ -255,7 +261,7 @@ class MainWindow(QMainWindow):
         self.spin_idx.setMaximum(0)
         self.spin_idx.setValue(0)
         self.spin_idx.valueChanged.connect(self.go_index)
-        
+
         self.lbl_filename = QLabel("")
 
         h2 = QHBoxLayout()
@@ -276,7 +282,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_t2, "T2")
         right_layout.addWidget(self.tabs)
         self.tabs.currentChanged.connect(self.on_tab_changed)
-        
+
         # 每個 tab 各有一組 CT/FT/MN 顯示框 + Dice label
         self.result_boxes = {"T1": {}, "T2": {}}
         self.dice_labels = {"T1": {}, "T2": {}}
@@ -346,7 +352,7 @@ class MainWindow(QMainWindow):
             self.spin_idx.setMaximum(max_len - 1)
 
     # ---------------- 載入影像資料夾 ----------------
-    def load_folder_images(self, folder): # 按照檔名排序
+    def load_folder_images(self, folder):  # 按照檔名排序
         files = [
             os.path.join(folder, f)
             for f in os.listdir(folder)
@@ -535,7 +541,7 @@ class MainWindow(QMainWindow):
                 box.clear()
                 dice_label.setText("Dice coefficient:")
                 continue
-            
+
             # 是否有預測
             if not self.show_pred:
                 # 僅顯示 GT mask
@@ -549,7 +555,7 @@ class MainWindow(QMainWindow):
                 if gt is None or pred is None:
                     box.clear()
                     continue
-                
+
                 overlay_np = draw_predict_mask(base_img, gt, pred)
 
             h, w, ch = overlay_np.shape
@@ -590,7 +596,7 @@ class MainWindow(QMainWindow):
                     t1_img = cv2.resize(t1_img, size)
                     t2_img = cv2.resize(t2_img, size)
 
-                    pred_bin = predict_mask(t1_img, t2_img, kind) # TODO
+                    pred_bin = predict_mask(t1_img, t2_img, kind)  # TODO
 
                     d = dice_coef(gt_mask, pred_bin)
                     self.pred_masks[kind].append(pred_bin)
